@@ -1,0 +1,65 @@
+FROM nvcr.io/nvidia/pytorch:24.02-py3
+
+ARG USERNAME=<<user>>
+ARG WORKING_DIR=<<working-dir>>
+ARG USER_UID=<<uid>>
+ARG USER_GID=<<gid>>
+ARG POETRY_VERSION=<<poetry-version>>
+
+SHELL ["/bin/bash", "-c"]
+
+# Use a non-root user
+ARG USER_UID=${USER_UID}
+ARG USER_GID=${USER_GID}
+
+# Create the user
+RUN groupadd --gid $USER_GID ${USERNAME} \
+    && useradd --uid $USER_UID --gid $USER_GID -m ${USERNAME}
+
+RUN mkdir -p ${WORKING_DIR}/ && \
+    chown -R $USER_GID:$USER_UID ${WORKING_DIR}
+
+# Install git/ssh/tmux
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    git ssh tmux vim curl htop sudo unzip python3-venv
+
+# Give sudo privledges  to user
+RUN echo ${USERNAME} ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME}
+
+# Install poetry
+# https://python-poetry.org/docs/configuration/#using-environment-variables
+USER ${USERNAME}
+ENV POETRY_VERSION="${POETRY_VERSION}" \
+    POETRY_HOME="/home/${USERNAME}/poetry" \
+    POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=false \
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_CACHE_DIR="/home/${USERNAME}/.cache/pypoetry" \
+    WORKING_DIR=${WORKING_DIR} \
+    BUILD_PATH="/home/${USERNAME}/build" \
+    VIRTUAL_ENV="/home/${USERNAME}/build/.venv"
+ENV PATH="${VIRTUAL_ENV}/bin:${POETRY_HOME}/bin:${PATH}"
+
+# Create and move context to build path
+RUN mkdir -p ${BUILD_PATH}
+WORKDIR ${BUILD_PATH}
+
+# Install poetry
+RUN curl -sSL https://install.python-poetry.org | python3 - && exec bash
+
+# Install project requirements, optionally copy lock file if present
+COPY ./pyproject.toml poetry.lock* ./
+
+# Init venv and upgrade pip
+RUN python -m venv .venv && \
+    source .venv/bin/activate && \
+    pip install --upgrade pip
+
+# Install project dependencies and use buildkit cache to speed up this step for subsequent builds
+# TODO: Get cache working for dependencies
+# RUN --mount=type=cache,target=${POETRY_CACHE_DIR},sharing=locked poetry install -v --no-root
+RUN poetry install -v --no-root
+
+WORKDIR ${WORKING_DIR}
